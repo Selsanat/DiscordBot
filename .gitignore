@@ -1,0 +1,17 @@
+# Fichiers Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environnements virtuels
+venv/
+env/
+.venv/
+
+# Fichiers de log
+*.log
+
+# Fichiers IDE
+.vscode/
+.idea/
