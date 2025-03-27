@@ -198,6 +198,7 @@ class YuumiTrackerBot(commands.Bot):
         self.add_friend('Taki', 'hupp')
         self.add_friend('Tel', 'zzzzz')
         self.add_friend('wati bidon', 'euw')
+        self.add_friend('Frootz', 'VIPER')
         self.track_yuumi_games.start()
 
 def main():
