@@ -70,7 +70,8 @@ class YuumiTrackerBot(commands.Bot):
         super().__init__(command_prefix='!', intents=intents)
         
         self.yuumi_friends_puuid = []
-        self.sent_games = set()  # Set pour stocker les IDs de parties envoyées
+        self.sent_games = set()  # Pour l'initialisation du message de début de partie
+        self.game_stats = {}     # Stocke les stats en cours pour chaque puuid
         
         self.yuumi_roasts = [
             "A défaut d'avoir de la chatte, au moins t'auras un petit chat, bouffon 😹",
@@ -85,7 +86,7 @@ class YuumiTrackerBot(commands.Bot):
             "Là, même un chat serait plus utile que toi en jeu. 🙃",
             "Tu dois vraiment être nul pour avoir besoin de Yuumi. D'un autre côté, t'as bien l'air d'un bouffon. 🧸"
         ]
-
+    
     def add_friend(self, riot_name, riot_tag):
         puuid = get_puuid_from_riot_name(riot_name, riot_tag, RIOT_API_KEY, RIOT_REGION)
         if puuid:
@@ -95,6 +96,11 @@ class YuumiTrackerBot(commands.Bot):
             print(f"Impossible d'ajouter {riot_name}#{riot_tag}")
 
     async def check_current_game(self, puuid):
+        """
+        Vérifie si l'ami est en partie et retourne un tuple :
+        (is_yuumi_game, summoner_name, game_id, stats)
+        stats est un dictionnaire avec 'kills', 'assists', 'deaths'
+        """
         try:
             summoner_url = f"https://{GAME_REGION}.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/{puuid}"
             headers = {"X-Riot-Token": RIOT_API_KEY}
@@ -102,10 +108,10 @@ class YuumiTrackerBot(commands.Bot):
 
             if summoner_response.status_code != 200:
                 print(f"Erreur récupération SummonerId : {summoner_response.status_code} - {summoner_response.text}")
-                return False, "", None
+                return False, "", None, {}
 
             summoner_data = summoner_response.json()
-            encrypted_summoner_id = summoner_data["id"]
+            # On n'utilise plus encrypted_summoner_id ici puisque l'API Spectator se base sur le puuid
 
             url = f"https://euw1.api.riotgames.com/lol/spectator/v5/active-games/by-summoner/{puuid}?api_key={RIOT_API_KEY}"
             response = requests.get(url)
@@ -114,50 +120,78 @@ class YuumiTrackerBot(commands.Bot):
                 game_data = response.json()
                 for participant in game_data['participants']:
                     if participant['championId'] == 350:  # Yuumi = 350
-                        game_id = game_data['gameId']  # Obtenez l'ID de la partie
-                        if game_id in self.sent_games:  # Vérifiez si le jeu a déjà été envoyé
-                            print(f"Message déjà envoyé pour la partie {game_id}")
-                            return False, "", None
-                        print(participant)
-                        return True, participant['riotId'], game_id  # Retournez aussi l'ID de la partie
+                        game_id = game_data['gameId']
+                        # Récupération des statistiques (on suppose que ces champs existent)
+                        participant_stats = {
+                            'kills': participant.get('kills', 0),
+                            'assists': participant.get('assists', 0),
+                            'deaths': participant.get('deaths', 0)
+                        }
+                        return True, participant['riotId'], game_id, participant_stats
             else:
                 print(f"Pas de partie en cours pour {puuid}. Code {response.status_code}")
             
-            return False, "", None
+            return False, "", None, {}
 
         except Exception as e:
             print(f"Erreur lors de la vérification de la partie en cours : {e}")
-            return False, "", None
+            return False, "", None, {}
 
-    @tasks.loop(minutes=5)
+    @tasks.loop(minutes=1)
     async def track_yuumi_games(self):
         channel = self.get_channel(CHANNEL_ID)
         
         for puuid in self.yuumi_friends_puuid:
-            is_yuumi_game, summoner_name, game_id = await self.check_current_game(puuid)
-            if is_yuumi_game:
-                roast = random.choice(self.yuumi_roasts)
-                gif_url = random.choice(GIFS_LIST)
-
-                summoner_url = f"https://{GAME_REGION}.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/{puuid}"
-                headers = {"X-Riot-Token": RIOT_API_KEY}
-                summoner_response = requests.get(summoner_url, headers=headers)
-                summoner_data = summoner_response.json()
-
-                embed = discord.Embed(
-                    title=f"{summoner_name} joue Yuumi !",
-                    description=f"{roast}\n**C'est l'heure de la moquerie !**",
-                    color=discord.Color.purple()
-                )
-                embed.set_image(url=gif_url)
-                embed.set_footer(text="L'équipe Yuumi vous observe 👀")
-
-                await channel.send(f"**{summoner_name}**, tu es en train de jouer Yuumi !", embed=embed)
-
-                # Ajoutez l'ID de la partie à la liste des parties envoyées
-                self.sent_games.add(game_id)
+            is_yuumi_game, summoner_name, game_id, stats = await self.check_current_game(puuid)
+            if is_yuumi_game and game_id:
+                # Si c'est une nouvelle partie ou si le game_id a changé, initialiser
+                if (puuid not in self.game_stats) or (self.game_stats[puuid]['game_id'] != game_id):
+                    self.game_stats[puuid] = {
+                        'game_id': game_id,
+                        'kills': stats.get('kills', 0),
+                        'assists': stats.get('assists', 0),
+                        'deaths': stats.get('deaths', 0)
+                    }
+                    # Envoyer le message d'annonce de la partie si ce n'est pas déjà fait
+                    if game_id not in self.sent_games:
+                        roast = random.choice(self.yuumi_roasts)
+                        gif_url = random.choice(GIFS_LIST)
+                        
+                        embed = discord.Embed(
+                            title=f"{summoner_name} joue Yuumi !",
+                            description=f"{roast}\n**C'est l'heure de la moquerie !**",
+                            color=discord.Color.purple()
+                        )
+                        embed.set_image(url=gif_url)
+                        embed.set_footer(text="L'équipe Yuumi vous observe 👀")
+                        
+                        await channel.send(f"**{summoner_name}**, tu es en train de jouer Yuumi !", embed=embed)
+                        self.sent_games.add(game_id)
+                else:
+                    # Partie en cours : comparer les stats et envoyer des messages pour chaque nouveau kill/assist/death
+                    prev_stats = self.game_stats[puuid]
+                    
+                    new_kills = stats.get('kills', 0) - prev_stats.get('kills', 0)
+                    new_assists = stats.get('assists', 0) - prev_stats.get('assists', 0)
+                    new_deaths = stats.get('deaths', 0) - prev_stats.get('deaths', 0)
+                    
+                    for _ in range(new_kills):
+                        await channel.send(f"**{summoner_name}**: don't steal kills yuumi, you've been a bad support!")
+                    for _ in range(new_assists):
+                        await channel.send(f"**{summoner_name}**: good job yuumi, you've been a good support!")
+                    for _ in range(new_deaths):
+                        await channel.send(f"**{summoner_name}**: i hope you gave everything to save your ADC!")
+                    
+                    # Mettre à jour les stats
+                    self.game_stats[puuid].update({
+                        'kills': stats.get('kills', 0),
+                        'assists': stats.get('assists', 0),
+                        'deaths': stats.get('deaths', 0)
+                    })
             else:
-                print(puuid + " n'est pas en train de jouer Yuumi")
+                # Si le joueur n'est plus en partie, on retire ses stats de suivi
+                if puuid in self.game_stats:
+                    del self.game_stats[puuid]
 
     async def on_ready(self):
         print(f'Connecté en tant que {self.user}')
